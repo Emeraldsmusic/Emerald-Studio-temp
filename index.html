@@ -1,0 +1,615 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EMERALD STUDIO - Bespoke Audio Platform (Interactive Pricing and Matching)</title>
+    
+    
+
+<script src="https://cdn.tailwindcss.com"></script>
+    
+    
+
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@100..900&family=Oswald:wght{500;700}&display=swap" rel="stylesheet">
+    
+    <style>
+        /* CSS Variables for easy theme management */
+        :root {
+            --color-primary-dark: #0D0D0D;
+            --color-secondary-dark: #181818; 
+            --color-neon-accent: #33C6FF; /* Brighter, new blue accent */
+            --color-neon-glow: rgba(51, 198, 255, 0.4);
+            --color-border-subtle: #333333;
+        }
+
+        /* Custom Tailwind Configuration - only extending non-text colors for stability */
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        'primary-dark': 'var(--color-primary-dark)',
+                        'secondary-dark': 'var(--color-secondary-dark)',
+                        'neon-accent': 'var(--color-neon-accent)',
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        cinematic: ['Oswald', 'sans-serif'],
+                    },
+                    boxShadow: {
+                        'neon': '0 0 20px var(--color-neon-glow), 0 0 8px var(--color-neon-glow)',
+                        'neon-sm': '0 0 10px var(--color-neon-glow)',
+                    }
+                }
+            }
+        }
+
+        body {
+            background-color: var(--color-primary-dark);
+            /* Removed grid background */
+            scroll-behavior: smooth;
+        }
+
+        /* Card Hover Effect */
+        .composer-card {
+            border: 1px solid var(--color-border-subtle);
+            transition: transform 0.3s ease, box-shadow 0.3s ease, border-color 0.3s ease;
+        }
+        .composer-card:hover {
+            transform: translateY(-4px);
+            border-color: var(--color-neon-accent);
+            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.5), 0 0 15px var(--color-neon-glow);
+        }
+        
+        /* Select Dropdown Styling */
+        .pricing-select {
+            appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='%2333C6FF'%3E%3Cpath fill-rule='evenodd' d='M5.23 7.21a.75.75 0 011.06.02L10 10.74l3.71-3.51a.75.75 0 111.02 1.08l-4.25 4a.75.75 0 01-1.02 0l-4.25-4a.75.75 0 01.02-1.06z' clip-rule='evenodd' /%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 0.75rem center;
+            background-size: 1.5em 1.5em;
+        }
+    </style>
+
+    
+    <script type="module">
+        // --- Firebase Setup and Initialization (Kept for environment compatibility) ---
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, collection, serverTimestamp, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global variables provided by the Canvas environment
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let app, db, auth;
+        let currentUserId = 'anonymous';
+        
+        // --- Pricing Constants and Functions ---
+        const BASE_CREATIVE_FEE = 3000; // Base: £3,000 
+
+        // Uplift factors for calculation (must match values in HTML options)
+        const UPLIFTS = {
+            territory: { 
+                country: { factor: 1.0, label: "Single Country" },
+                continent: { factor: 1.4, label: "Single Continent" },
+                worldwide: { factor: 2.0, label: "Worldwide License" }
+            },
+            media: { 
+                digital: { factor: 1.0, label: "Digital Only" },
+                all_media: { factor: 1.4, label: "All Media (TV/Radio)" }
+            },
+            term: { 
+                three_months: { factor: 1.0, label: "3 Months Term" },
+                six_months: { factor: 1.15, label: "6 Months Term" },
+                twelve_months: { factor: 1.3, label: "12 Months Term" },
+                twenty_four_months: { factor: 1.5, label: "24 Months Term" }
+            },
+            turnaround: { 
+                standard: { factor: 1.0, label: "Standard (10-15 BD)" },
+                fast: { factor: 1.15, label: "Fast (5-7 BD)" },
+                express: { factor: 1.35, label: "Express (2-3 BD)" }
+            }
+        };
+
+        const COMPOSERS = [
+            { name: "Anya V", style: "Epic Orchestral / World Scoring" },
+            { name: "DJ Flux", style: "Future Garage / Gritty Trap" },
+            { name: "Cali", style: "Ambient Lo-Fi / Experimental" },
+        ];
+
+
+        /**
+         * Formats an amount into GBP currency string.
+         * @param {number} amount The monetary value.
+         * @returns {string} The formatted currency string (e.g., £3,000).
+         */
+        function formatCurrency(amount) {
+            return new Intl.NumberFormat('en-GB', {
+                style: 'currency',
+                currency: 'GBP',
+                minimumFractionDigits: 0
+            }).format(amount);
+        }
+
+        /**
+         * Calculates the total project cost and updates the UI.
+         */
+        window.calculateTotal = function() {
+            const territoryEl = document.getElementById('territory-select');
+            const mediaEl = document.getElementById('media-select');
+            const termEl = document.getElementById('term-select'); 
+            const turnaroundEl = document.getElementById('turnaround-select'); 
+            const priceDisplayEl = document.getElementById('price-display');
+            const breakdownEl = document.getElementById('breakdown-list');
+
+            if (!territoryEl || !mediaEl || !termEl || !turnaroundEl) return;
+
+            // Get selected factors and labels
+            const tFactor = UPLIFTS.territory[territoryEl.value].factor;
+            const mFactor = UPLIFTS.media[mediaEl.value].factor;
+            const teFactor = UPLIFTS.term[termEl.value].factor; 
+            const trFactor = UPLIFTS.turnaround[turnaroundEl.value].factor; 
+
+            const tLabel = UPLIFTS.territory[territoryEl.value].label;
+            const mLabel = UPLIFTS.media[mediaEl.value].label;
+            const teLabel = UPLIFTS.term[termEl.value].label; 
+            const trLabel = UPLIFTS.turnaround[turnaroundEl.value].label; 
+
+            // Calculation: Base * T * M * Te * Tr
+            let total = BASE_CREATIVE_FEE * tFactor * mFactor * teFactor * trFactor;
+            
+            // Update Price Display
+            priceDisplayEl.innerText = formatCurrency(total);
+            
+            // Update Breakdown List
+            breakdownEl.innerHTML = `
+                <li class="flex justify-between border-b border-gray-700 py-2">
+                    <span class="text-white font-medium">Base Creative Fee:</span>
+                    <span class="text-neon-accent font-bold">${formatCurrency(BASE_CREATIVE_FEE)}</span>
+                </li>
+                <li class="flex justify-between border-b border-gray-700 py-2">
+                    <span class="text-gray-400">${tLabel}:</span>
+                    <span class="text-gray-300 font-mono">x${tFactor.toFixed(2)}</span>
+                </li>
+                <li class="flex justify-between border-b border-gray-700 py-2">
+                    <span class="text-gray-400">${mLabel}:</span>
+                    <span class="text-gray-300 font-mono">x${mFactor.toFixed(2)}</span>
+                </li>
+                <li class="flex justify-between border-b border-gray-700 py-2">
+                    <span class="text-gray-400">${teLabel}:</span>
+                    <span class="text-gray-300 font-mono">x${teFactor.toFixed(2)}</span>
+                </li>
+                <li class="flex justify-between py-2">
+                    <span class="text-gray-400">${trLabel}:</span>
+                    <span class="text-gray-300 font-mono">x${trFactor.toFixed(2)}</span>
+                </li>
+            `;
+        }
+
+        /**
+         * Simulates the AI matching process based on the brief content.
+         */
+        window.matchComposer = function() {
+            const briefText = document.getElementById('creative-brief').value;
+            const references = document.getElementById('musical-references').value;
+            const resultDisplay = document.getElementById('match-result-display');
+            const matchButton = document.getElementById('match-button');
+
+            if (briefText.length < 50) {
+                resultDisplay.innerHTML = '<p class="text-red-400 text-center">Please provide a more detailed creative brief (min 50 characters).</p>';
+                return;
+            }
+
+            // Lock the button and show loading state
+            matchButton.disabled = true;
+            matchButton.innerText = 'Analyzing Brief...';
+            resultDisplay.innerHTML = `
+                <div class="flex justify-center items-center py-8">
+                    <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-neon-accent mr-3"></div>
+                    <span class="text-gray-400">Processing semantic and tonal data...</span>
+                </div>
+            `;
+
+
+            // Simple Mock AI Logic
+            const keywords = briefText.toLowerCase().split(/\s+/);
+            let matchedComposer = COMPOSERS[Math.floor(Math.random() * COMPOSERS.length)];
+
+            if (keywords.includes('epic') || keywords.includes('trailer') || keywords.includes('orchestral')) {
+                matchedComposer = COMPOSERS[0]; // Anya V
+            } else if (keywords.includes('urban') || keywords.includes('bass') || keywords.includes('trap')) {
+                matchedComposer = COMPOSERS[1]; // DJ Flux
+            } else if (keywords.includes('calm') || keywords.includes('minimal') || keywords.includes('ambient')) {
+                matchedComposer = COMPOSERS[2]; // Cali
+            }
+
+
+            setTimeout(() => {
+                const resultHTML = `
+                    <h4 class="text-2xl font-bold text-green-400 mb-4 text-center">✅ Match Found!</h4>
+                    <div class="bg-primary-dark p-6 rounded-lg border border-neon-accent/50 shadow-neon-sm">
+                        <p class="text-xl font-semibold text-white mb-2">Recommended Composer:</p>
+                        <p class="text-3xl font-black text-neon-accent">${matchedComposer.name}</p>
+                        <p class="text-lg text-gray-400 mt-1">Best suited for: <span class="font-mono text-white">${matchedComposer.style}</span></p>
+                        <p class="text-sm text-gray-500 mt-4">
+                            EMERALD STUDIO's AI detected a primary need for **${matchedComposer.style}** based on your brief. 
+                            The composer will now review your reference tracks and begin the initial Udio concept phase.
+                        </p>
+                    </div>
+                `;
+                resultDisplay.innerHTML = resultHTML;
+
+                // Reset the button
+                matchButton.disabled = false;
+                matchButton.innerText = 'RE-ANALYZE BRIEF';
+
+            }, 2500); // Simulate 2.5 seconds of AI processing
+        }
+
+        // --- Firebase Init (Kept for environment compatibility) ---
+
+        if (Object.keys(firebaseConfig).length > 0) {
+            try {
+                app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                setLogLevel('Debug'); 
+                
+                onAuthStateChanged(auth, async (user) => {
+                    if (user) {
+                        currentUserId = user.uid;
+                    } else {
+                        if (initialAuthToken) {
+                            await signInWithCustomToken(auth, initialAuthToken);
+                        } else {
+                            const anonUser = await signInAnonymously(auth);
+                            currentUserId = anonUser.user.uid;
+                        }
+                    }
+                    window.currentUserId = currentUserId; 
+                });
+            } catch (error) {
+                console.error("Firebase initialization failed:", error);
+            }
+        } else {
+            window.currentUserId = "anonymous (mock)";
+        }
+
+        // --- Utility Functions ---
+
+        window.scrollToElement = function(id) {
+            document.getElementById(id).scrollIntoView({ behavior: 'smooth' });
+        }
+    </script>
+</head>
+
+<body class="bg-primary-dark text-white font-sans">
+    
+
+<header class="sticky top-0 z-50 bg-primary-dark/90 backdrop-blur-md shadow-lg border-b border-neon-accent/10">
+        <nav class="max-w-7xl mx-auto px-6 sm:px-8 py-4 flex justify-between items-center">
+            <div class="text-3xl font-black tracking-widest text-neon-accent cursor-pointer font-cinematic">
+                E M E R A L D <span class="text-white/80">STUDIO</span>
+            </div>
+            <div class="space-x-8 hidden md:flex text-gray-400">
+                <a href="#composers" onclick="scrollToElement('composers')" class="hover:text-neon-accent transition duration-300">Composers</a>
+                <a href="#process" onclick="scrollToElement('process')" class="hover:text-neon-accent transition duration-300">Process</a>
+                <a href="#ai-briefing" onclick="scrollToElement('ai-briefing')" class="hover:text-neon-accent transition duration-300 font-bold text-white">AI Match</a>
+                <a href="#pricing-structure" onclick="scrollToElement('pricing-structure')" class="hover:text-neon-accent transition duration-300">Pricing</a>
+            </div>
+            <button onclick="scrollToElement('ai-briefing')" class="bg-neon-accent text-primary-dark font-bold py-2 px-6 rounded-full shadow-neon-sm hover:bg-white hover:shadow-neon hover:scale-105 transition duration-300 transform">
+                Start Briefing
+            </button>
+        </nav>
+    </header>
+
+    <main>
+        
+        
+
+<section id="home" class="bg-primary-dark pt-20 pb-28 min-h-[600px] flex items-center justify-center relative overflow-hidden border-b border-neon-accent/20">
+            
+            
+            <!-- Updated video source to a more reliable sample file (BigBuckBunny.mp4) for playback. -->
+<video autoplay loop muted playsinline class="absolute inset-0 w-full h-full object-cover object-center opacity-50">
+                <source src="https://storage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4" type="video/mp4">
+                Your browser does not support the video tag.
+            </video>
+
+            
+
+<div class="absolute inset-0 bg-primary-dark/70 [mask-image:radial-gradient(ellipse_at_center,transparent_20%,black)] z-[5]"></div>
+            
+            <div class="relative z-10 text-center px-6 max-w-5xl mx-auto">
+                
+
+<h1 class="text-5xl sm:text-6xl lg:text-7xl font-black font-cinematic uppercase tracking-tight leading-tight mb-6">
+                    <span class="text-white block">BESPOKE MUSIC,</span>
+                    <span class="text-neon-accent block mt-1">FIXED COST, INSTANT MATCH.</span>
+                </h1>
+                <p class="text-xl sm:text-2xl text-gray-400 mx-auto mb-10">
+                    The world's best composers matched to your campaign's semantic needs in seconds, with 100% royalty-free usage.
+                </p>
+                <button onclick="scrollToElement('ai-briefing')" class="bg-neon-accent text-primary-dark font-extrabold text-lg py-4 px-10 rounded-full shadow-neon hover:bg-white hover:scale-[1.02] transition duration-500 transform">
+                    Start AI Briefing Now
+                </button>
+            </div>
+        </section>
+
+        
+
+<section id="composers" class="py-20 max-w-7xl mx-auto px-6 sm:px-8">
+            <h2 class="text-4xl font-bold text-center mb-16 text-white font-cinematic tracking-wide">The Roster: Vetted for Excellence</h2>
+            <div class="grid md:grid-cols-3 gap-8">
+                
+                
+
+<div class="composer-card bg-secondary-dark rounded-2xl shadow-xl cursor-pointer overflow-hidden">
+                    <img src="https://images.unsplash.com/photo-1544005313-94ddf0286df2?q=80&w=2576&auto=format&fit=crop&ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D" alt="Anya V Portrait" class="w-full h-64 object-cover object-center border-b border-neon-accent/20">
+                    <div class="p-6">
+                        <h3 class="text-2xl font-bold text-white mb-2">Anya V</h3>
+                        <p class="text-neon-accent font-mono text-sm mb-4">Epic Orchestral / World Scoring</p>
+                        <p class="text-gray-400">Master of massive, emotional soundscapes, specializing in high-stakes drama and cinematic trailer music.</p>
+                    </div>
+                </div>
+                
+                
+
+<div class="composer-card bg-secondary-dark rounded-2xl shadow-xl cursor-pointer overflow-hidden">
+                    <img src="https://images.unsplash.com/photo-1557862921-37829c790f19?q=80&w=2671&auto=format&fit=crop&ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D" alt="DJ Flux Portrait" class="w-full h-64 object-cover object-center border-b border-neon-accent/20">
+                    <div class="p-6">
+                        <h3 class="text-2xl font-bold text-white mb-2">DJ Flux</h3>
+                        <p class="text-neon-accent font-mono text-sm mb-4">Future Garage / Gritty Trap</p>
+                        <p class="text-gray-400">Pioneering underground sounds, delivering aggressive basslines and complex rhythmic structures for youth and sports brands.</p>
+                    </div>
+                </div>
+                
+                
+
+<div class="composer-card bg-secondary-dark rounded-2xl shadow-xl cursor-pointer overflow-hidden">
+                    <img src="https://images.unsplash.com/photo-1570295999919-56ceb5ecca61?q=80&w=2680&auto=format&fit=crop&ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D" alt="Cali Portrait" class="w-full h-64 object-cover object-center border-b border-neon-accent/20">
+                    <div class="p-6">
+                        <h3 class="text-2xl font-bold text-white mb-2">Cali</h3>
+                        <p class="text-neon-accent font-mono text-sm mb-4">Ambient Lo-Fi / Experimental</p>
+                        <p class="text-gray-400">Creates textured, subtle sound design, perfect for luxury, documentary, and mindful consumer campaigns.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        
+
+<section id="process" class="py-20 bg-secondary-dark/70 max-w-7xl mx-auto px-6 sm:px-8 rounded-2xl my-16 border border-neon-accent/10">
+            <h2 class="text-4xl font-bold text-center mb-16 text-neon-accent font-cinematic tracking-wide">The EMERALD STUDIO Protocol</h2>
+            <div class="grid md:grid-cols-4 gap-10">
+                
+                <div class="text-center p-4">
+                    <div class="w-16 h-16 rounded-full bg-neon-accent/10 flex items-center justify-center mx-auto mb-4 border border-neon-accent">
+                        <span class="text-3xl font-bold text-neon-accent">1</span>
+                    </div>
+                    <h4 class="text-xl font-semibold mb-2 text-white">AI Briefing</h4>
+                    <p class="text-gray-400">Paste your creative brief. Our LLM instantly extracts needs and suggests the perfect style.</p>
+                </div>
+                
+                <div class="text-center p-4">
+                    <div class="w-16 h-16 rounded-full bg-neon-accent/10 flex items-center justify-center mx-auto mb-4 border border-neon-accent">
+                        <span class="text-3xl font-bold text-neon-accent">2</span>
+                    </div>
+                    <h4 class="text-xl font-semibold mb-2 text-white">Fixed Quote</h4>
+                    <p class="text-gray-400">Receive a non-negotiable fixed price based on your licensing and turnaround needs, before work starts.</p>
+                </div>
+                
+                <div class="text-center p-4">
+                    <div class="w-16 h-16 rounded-full bg-neon-accent/10 flex items-center justify-center mx-auto mb-4 border border-neon-accent">
+                        <span class="text-3xl font-bold text-neon-accent">3</span>
+                    </div>
+                    <h4 class="text-xl font-semibold mb-2 text-white">Hybrid Creation</h4>
+                    <p class="text-gray-400">Your composer uses **Udio** and our **Tonal Reference Generator** for initial concepts, followed by human arrangement (2 revisions).</p>
+                </div>
+                
+                <div class="text-center p-4">
+                    <div class="w-16 h-16 rounded-full bg-neon-accent/10 flex items-center justify-center mx-auto mb-4 border border-neon-accent">
+                        <span class="text-3xl font-bold text-neon-accent">4</span>
+                    </div>
+                    <h4 class="text-xl font-semibold mb-2 text-white">Adaptive Mastering</h4>
+                    <p class="text-gray-400">The final masters are processed by our **Adaptive Stem Masterer** AI for instant 100% royalty-free worldwide license.</p>
+                </div>
+            </div>
+        </section>
+
+        
+
+<section id="ai-briefing" class="py-20 max-w-5xl mx-auto px-6 sm:px-8">
+            <h2 class="text-4xl font-bold text-center mb-4 text-white font-cinematic tracking-wide">THE EMERALD STUDIO MATCHMAKER</h2>
+            <p class="text-xl text-center text-gray-400 mb-12">Paste your brief below. Our AI extracts mood, tempo, and genre to match you with the perfect composer from our roster.</p>
+
+            <div class="bg-secondary-dark p-8 md:p-10 rounded-2xl shadow-2xl border border-neon-accent/50">
+                <div class="grid lg:grid-cols-2 gap-8">
+                    
+                    
+
+<div class="space-y-6">
+                        <h3 class="text-2xl font-bold text-neon-accent mb-4 border-b border-gray-700 pb-2">Creative Briefing</h3>
+
+                        <div>
+                            <label for="creative-brief" class="block text-base font-medium text-gray-300 mb-2">Creative Brief (Mood, Tempo, Key Message)</label>
+                            <textarea id="creative-brief" rows="6" placeholder="Example: We need an aggressive, fast-paced orchestral track with a sense of urgency for a new car launch. Target audience is 25-35, luxury sports focus." class="w-full p-3 bg-primary-dark border border-gray-700 rounded-lg text-white focus:ring-neon-accent focus:border-neon-accent"></textarea>
+                        </div>
+
+                        <div>
+                            <label for="musical-references" class="block text-base font-medium text-gray-300 mb-2">Musical References (Optional, e.g., Artist/Song names, YouTube links)</label>
+                            <input type="text" id="musical-references" placeholder="Link 1, Artist Name, Song Title..." class="w-full p-3 bg-primary-dark border border-gray-700 rounded-lg text-white focus:ring-neon-accent focus:border-neon-accent">
+                        </div>
+
+                        <button id="match-button" onclick="matchComposer()" class="w-full bg-neon-accent text-primary-dark font-extrabold text-lg py-3 rounded-xl shadow-neon hover:bg-white hover:scale-[1.005] transition duration-300">
+                            RUN AI COMPOSER MATCH
+                        </button>
+                    </div>
+                    
+                    
+
+<div class="flex flex-col justify-center bg-primary-dark p-6 rounded-xl border-2 border-neon-accent/80 shadow-neon-sm">
+                        <h3 class="text-xl font-bold text-white mb-4 text-center">AI Match Result</h3>
+                        <div id="match-result-display" class="min-h-32 flex items-center justify-center">
+                            <p class="text-gray-500 text-center">Paste your brief and hit the button to find your ideal composer.</p>
+                        </div>
+                    </div>
+
+                </div>
+            </div>
+        </section>
+        
+        
+
+<section id="pricing-structure" class="py-20 max-w-5xl mx-auto px-6 sm:px-8">
+            <h2 class="text-4xl font-bold text-center mb-4 text-white font-cinematic tracking-wide">FIXED PROJECT COST CALCULATOR</h2>
+            <p class="text-xl text-center text-gray-400 mb-12">Select your usage requirements to get an immediate, non-negotiable fixed price. (Base Fee: £3,000)</p>
+
+            <div class="bg-secondary-dark p-8 md:p-10 rounded-2xl shadow-2xl border border-neon-accent/50">
+                <div class="grid lg:grid-cols-2 gap-8">
+                    
+                    
+
+<div class="space-y-6">
+                        <h3 class="text-2xl font-bold text-neon-accent mb-4 border-b border-gray-700 pb-2">Licensing Parameters</h3>
+
+                        
+
+<div>
+                            <label for="media-select" class="block text-base font-medium text-gray-300 mb-2">1. Media Usage</label>
+                            <select id="media-select" onchange="calculateTotal()" class="pricing-select w-full p-3 bg-primary-dark border border-gray-700 rounded-lg text-white focus:ring-neon-accent focus:border-neon-accent">
+                                <option value="digital">Digital Only (x1.0)</option>
+                                <option value="all_media">All Media (TV/Radio) (x1.4)</option>
+                            </select>
+                            <p class="text-xs text-gray-500 mt-1">Multiplier: <span id="media-factor">x1.00</span></p>
+                        </div>
+
+                        
+
+<div>
+                            <label for="territory-select" class="block text-base font-medium text-gray-300 mb-2">2. Territory Coverage</label>
+                            <select id="territory-select" onchange="calculateTotal()" class="pricing-select w-full p-3 bg-primary-dark border border-gray-700 rounded-lg text-white focus:ring-neon-accent focus:border-neon-accent">
+                                <option value="country">Single Country (x1.0)</option>
+                                <option value="continent">Single Continent (x1.4)</option>
+                                <option value="worldwide">Worldwide License (x2.0)</option>
+                            </select>
+                            <p class="text-xs text-gray-500 mt-1">Multiplier: <span id="territory-factor">x1.00</span></p>
+                        </div>
+                        
+                        
+
+<div>
+                            <label for="term-select" class="block text-base font-medium text-gray-300 mb-2">3. License Term (Duration)</label>
+                            <select id="term-select" onchange="calculateTotal()" class="pricing-select w-full p-3 bg-primary-dark border border-gray-700 rounded-lg text-white focus:ring-neon-accent focus:border-neon-accent">
+                                <option value="three_months">3 Months (x1.0)</option>
+                                <option value="six_months">6 Months (x1.15)</option>
+                                <option value="twelve_months">12 Months (x1.3)</option>
+                                <option value="twenty_four_months">24 Months Max (x1.5)</option>
+                            </select>
+                            <p class="text-xs text-gray-500 mt-1">Multiplier: <span id="term-factor">x1.00</span></p>
+                        </div>
+                        
+                        
+
+<div>
+                            <label for="turnaround-select" class="block text-base font-medium text-gray-300 mb-2">4. Turnaround Speed</label>
+                            <select id="turnaround-select" onchange="calculateTotal()" class="pricing-select w-full p-3 bg-primary-dark border border-gray-700 rounded-lg text-white focus:ring-neon-accent focus:border-neon-accent">
+                                <option value="standard">Standard (10-15 BD) (x1.0)</option>
+                                <option value="fast">Fast (5-7 BD) (x1.15)</option>
+                                <option value="express">Express (2-3 BD) (x1.35)</option>
+                            </select>
+                            <p class="text-xs text-gray-500 mt-1">Multiplier: <span id="turnaround-factor">x1.00</span></p>
+                        </div>
+                    </div>
+                    
+                    
+
+<div class="bg-primary-dark p-6 rounded-xl border-2 border-neon-accent/80 shadow-neon-sm flex flex-col justify-between">
+                        <div>
+                            <h3 class="text-xl font-bold text-white mb-4">Total Price Breakdown</h3>
+                            <ul id="breakdown-list" class="text-sm space-y-1 mb-8">
+                                
+
+</ul>
+                        </div>
+
+                        
+
+<div>
+                            <div class="flex justify-between items-center mt-6 pt-4 border-t border-gray-700">
+                                <p class="text-xl font-bold text-white uppercase">Final Fixed Project Price:</p>
+                                
+
+<p id="price-display" class="text-4xl sm:text-5xl font-extrabold text-neon-accent transition-all duration-300">£3,000</p>
+                            </div>
+                            <p class="text-sm text-gray-500 mt-2 text-right">Includes 100% royalty-free license.</p>
+                        </div>
+                    </div>
+
+                </div>
+
+                <div class="mt-8 text-center">
+                    <button class="bg-neon-accent text-primary-dark font-extrabold text-xl py-3 px-8 rounded-xl shadow-neon hover:bg-white hover:scale-[1.005] transition duration-300">
+                        PROCEED TO CREATIVE BRIEFING
+                    </button>
+                </div>
+            </div>
+        </section>
+
+
+    </main>
+
+    
+
+<footer class="bg-secondary-dark border-t border-neon-accent/10 mt-20">
+        <div class="max-w-7xl mx-auto px-6 sm:px-8 py-10 text-center text-gray-500">
+            <div class="text-2xl font-bold tracking-widest text-neon-accent mb-4 font-cinematic">E M E R A L D</div>
+            <p class="text-sm text-gray-400">© 2025 EMERALD STUDIO. All Rights Reserved. | 100% Royalty License.</p>
+            <p class="text-xs mt-2 text-gray-400">User ID: <span class="font-mono" id="user-id-display">Loading...</span> | App ID: <span class="font-mono">${appId}</span></p>
+        </div>
+    </footer>
+
+    
+    <script>
+        // Update the factor displays when inputs change
+        document.querySelectorAll('#pricing-structure select').forEach(select => {
+            select.addEventListener('change', (e) => {
+                const selectedOption = e.target.options[e.target.selectedIndex];
+                const value = selectedOption.value;
+                
+                // Extract factor from UPLIFTS object using the selected value
+                const factorKey = e.target.id.replace('-select', '');
+                let factor = 'x1.00';
+                
+                if (window.UPLIFTS && window.UPLIFTS[factorKey] && window.UPLIFTS[factorKey][value]) {
+                    factor = `x${window.UPLIFTS[factorKey][value].factor.toFixed(2)}`;
+                }
+                
+                document.getElementById(factorKey + '-factor').innerText = factor;
+            });
+        });
+
+        document.addEventListener('DOMContentLoaded', () => {
+            // Initial call to set the price based on default selections
+            window.calculateTotal(); 
+
+            // Initial factor display setup
+            document.querySelectorAll('#pricing-structure select').forEach(select => {
+                const event = new Event('change');
+                select.dispatchEvent(event);
+            });
+
+            // Script for User ID display
+            const userIdDisplay = document.getElementById('user-id-display');
+            const checkAuth = setInterval(() => {
+                if (window.currentUserId) {
+                    userIdDisplay.innerText = window.currentUserId;
+                    clearInterval(checkAuth);
+                }
+            }, 500);
+        });
+    </script>
+</body>
+</html>
